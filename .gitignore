@@ -1,0 +1,69 @@
+#Secrets & Environment
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.p12
+*.pfx
+
+#NVIDIA / AI Model Files
+server/models/*.onnx
+server/models/*.pt
+server/models/*.bin
+server/models/*.gguf
+
+#Dependencies
+node_modules/
+client/node_modules/
+server/node_modules/
+
+#Build Outputs
+dist/
+client/dist/
+server/dist/
+build/
+*.js.map
+*.d.ts.map
+
+#TypeScript Cache
+*.tsbuildinfo
+client/*.tsbuildinfo
+server/*.tsbuildinfo
+
+#Vite
+client/.vite/
+
+#Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+#Docker
+.docker/
+docker-compose.override.yml
+
+#OS Noise
+.DS_Store
+Thumbs.db
+desktop.ini
+
+#IDE/Editor
+.vscode/settings.json
+.vscode/launch.json
+.idea/
+*.suo
+*.user
+
+#Testing & Coverage
+coverage/
+.nyc_output/
+
+#Temp/Scratch
+tmp/
+temp/
+*.tmp
+*.swp
