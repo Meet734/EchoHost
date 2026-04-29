@@ -1,185 +1,211 @@
-// Immutable audio spec negotiated at WebSocket handshake
-export const AUDIO_SPEC = {
-  SAMPLE_RATE: 16_000,
-  CHANNELS: 1,
-  BIT_DEPTH: 16,
-  CHUNK_DURATION_MS: 20,
-  CHUNK_BYTES: 640,
+export const PROTOCOL_VERSION = "1.0.0" as const;
+
+// Audio Pipeline Types
+export interface AudioChunk {
+  readonly pcm: Int16Array;
+  readonly capturedAt: number;
+  readonly seq: number;
+}
+
+// Binary wire format: [seq: Uint32 (4 bytes)] [capturedAt: Float64 (8 bytes)] [pcm: Int16[] (N bytes)]
+export const AUDIO_HEADER_BYTES = 12 as const;
+
+export interface AudioPacket {
+  readonly seq: number;
+  readonly capturedAt: number;
+  readonly pcmBuffer: ArrayBuffer;
+}
+
+// FSM Pipeline Phases - IDLE → LISTENING → VAD_ACTIVE → TRANSCRIBING → REASONING → SPEAKING → IDLE
+export const PipelineState = {
+  IDLE: "IDLE",
+  LISTENING: "LISTENING",
+  VAD_ACTIVE: "VAD_ACTIVE",
+  TRANSCRIBING: "TRANSCRIBING",
+  REASONING: "REASONING",
+  SPEAKING: "SPEAKING",
+  ERROR: "ERROR",
 } as const;
 
-export type AudioSpec = typeof AUDIO_SPEC;
+export type PipelineState = (typeof PipelineState)[keyof typeof PipelineState];
 
-// One 20 ms chunk of PCM-S16LE audio flowing over the WebSocket
-export interface AudioPacket {
-  seq: number;
-  capturedAt: number;
-  payload: ArrayBuffer | Buffer;
-  isSpeech: boolean;
-  rmsDb: number;
-  sessionId: string;
+// Valid state transitions
+export const VALID_TRANSITIONS: Readonly<
+  Record<PipelineState, readonly PipelineState[]>
+> = {
+  IDLE: [PipelineState.LISTENING],
+  LISTENING: [PipelineState.VAD_ACTIVE, PipelineState.IDLE],
+  VAD_ACTIVE: [PipelineState.TRANSCRIBING, PipelineState.LISTENING],
+  TRANSCRIBING: [PipelineState.REASONING, PipelineState.ERROR],
+  REASONING: [PipelineState.SPEAKING, PipelineState.ERROR],
+  SPEAKING: [PipelineState.IDLE],
+  ERROR: [],
+} as const;
+
+// FSM transition event
+export interface StateTransitionEvent {
+  readonly from: PipelineState;
+  readonly to: PipelineState;
+  readonly timestamp: number;
+  readonly sessionId: string;
 }
 
-// All FSM phases: idle → listening → processing → speaking → idle
-// 'error' is terminal — client must reconnect
-export type PipelinePhase =
-  | 'idle'
-  | 'listening'
-  | 'processing'
-  | 'speaking'
-  | 'error';
+// VAD Types
+export interface VADResult {
+  readonly probability: number;
+  readonly isSpeech: boolean;
+  readonly frameTimestamp: number;
+}
 
-// Latency breakdown per turn — all values in ms
+export interface VADConfig {
+  readonly threshold: number;
+  readonly windowSize: number;
+  readonly minSpeechFrames: number;
+  readonly silencePaddingFrames: number;
+}
+
+// Aviation Intents
+export const AviationIntent = {
+  CHECK_GATE: "CHECK_GATE",
+  TRACK_BAGGAGE: "TRACK_BAGGAGE",
+  CHECK_FLIGHT_STATUS: "CHECK_FLIGHT_STATUS",
+  GET_WEATHER_BRIEFING: "GET_WEATHER_BRIEFING",
+  CHECK_CONNECTION_TIME: "CHECK_CONNECTION_TIME",
+  CHECK_LOUNGE_LOCATION: "CHECK_LOUNGE_LOCATION",
+  REQUEST_MEAL_PREFERENCE: "REQUEST_MEAL_PREFERENCE",
+  CHECK_UPGRADE_AVAILABILITY: "CHECK_UPGRADE_AVAILABILITY",
+  REPORT_LOST_ITEM: "REPORT_LOST_ITEM",
+  GET_WIFI_ACCESS: "GET_WIFI_ACCESS",
+  CHECK_LOAD_FACTOR: "CHECK_LOAD_FACTOR",
+  CHECK_CREW_STATUS: "CHECK_CREW_STATUS",
+  LOG_MAINTENANCE: "LOG_MAINTENANCE",
+  CHECK_BAGGAGE_LOAD: "CHECK_BAGGAGE_LOAD",
+  CHECK_FUELING: "CHECK_FUELING",
+  CHECK_CATERING: "CHECK_CATERING",
+  GET_STAND_ALLOCATION: "GET_STAND_ALLOCATION",
+  REPORT_SECURITY_ALERT: "REPORT_SECURITY_ALERT",
+  UNKNOWN: "UNKNOWN",
+} as const;
+
+export type AviationIntent =
+  (typeof AviationIntent)[keyof typeof AviationIntent];
+
+// Intent extracted by ReasoningEngine
+export interface ExtractedIntent {
+  readonly intent: AviationIntent;
+  readonly entities: Readonly<Record<string, string>>;
+  readonly confidence: number;
+  readonly transcript: string;
+}
+
+// Tool call made by LLM
+export interface ToolCall {
+  readonly toolName: string;
+  readonly parameters: Readonly<Record<string, unknown>>;
+  readonly invokedAt: number;
+  readonly resolvedAt?: number;
+  readonly result?: unknown;
+  readonly error?: string;
+}
+
+// Latency breakdown for a turn (in ms)
 export interface TurnLatency {
-  asrMs: number;
-  reasoningMs: number;
-  ttsMs: number;
-  e2eMs: number;
+  readonly vadMs: number;
+  readonly asrMs: number;
+  readonly llmMs: number;
+  readonly ttsFirstByteMs: number;
+  readonly totalRoundTripMs: number;
 }
 
-// Broadcast on every FSM transition
-export interface SystemState {
-  phase: PipelinePhase;
-  sessionId: string | null;
-  transcript: string;
-  isFinal: boolean;
-  intent: string | null;
-  lastTurnLatency: TurnLatency | null;
-  updatedAt: number;
-  error: PipelineError | null;
+// Telemetry snapshot for dashboard
+export interface TelemetrySnapshot {
+  readonly sessionId: string;
+  readonly turnNumber: number;
+  readonly timestamp: number;
+  readonly latency: TurnLatency;
+  readonly currentState: PipelineState;
+  readonly vadProbability: number;
+  readonly toolCalls: readonly ToolCall[];
+  readonly transcript?: string;
+  readonly response?: string;
 }
 
-export interface PipelineError {
-  code: PipelineErrorCode;
-  message: string;
-  timestamp: string;
-  layer: 'vad' | 'asr' | 'reasoning' | 'tts' | 'guardrails' | 'transport';
-}
-
-export type PipelineErrorCode =
-  | 'AUDIO_BUFFER_OVERFLOW'
-  | 'ASR_STREAM_TIMEOUT'
-  | 'NIM_RATE_LIMIT'
-  | 'NIM_UNAVAILABLE'
-  | 'GUARDRAILS_VIOLATION'
-  | 'TTS_STREAM_ERROR'
-  | 'UNKNOWN';
-
-// All tool IDs the reasoning layer can invoke
-export type AviationActionId =
-  | 'FETCH_FLIGHT_STATUS'
-  | 'FETCH_GATE_INFO'
-  | 'FETCH_WEATHER_METAR'
-  | 'FETCH_NOTAM'
-  | 'REBOOK_PASSENGER'
-  | 'ESCALATE_TO_HUMAN'
-  | 'PLAYBACK_ANNOUNCEMENT'
-  | 'LOG_INCIDENT';
-
-export type TaskSeverity = 'routine' | 'advisory' | 'urgent' | 'emergency';
-
-export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
-
-// One agentic tool call produced by the reasoning layer
-export interface AviationTask {
-  taskId: string;     // UUID-v4
-  sessionId: string;
-  actionId: AviationActionId;
-  params: AviationTaskParams;
-  severity: TaskSeverity;
-  status: TaskStatus;
-  createdAt: string;
-  resolvedAt: string | null;
-  result: AviationTaskResult | null;
-  errorMessage: string | null;
-}
-
-// Discriminated union — one params type per action
-export type AviationTaskParams =
-  | FetchFlightStatusParams
-  | FetchGateInfoParams
-  | FetchWeatherMetarParams
-  | FetchNotamParams
-  | RebookPassengerParams
-  | EscalateToHumanParams
-  | PlaybackAnnouncementParams
-  | LogIncidentParams;
-
-export interface FetchFlightStatusParams {
-  actionId: 'FETCH_FLIGHT_STATUS';
-  flightNumber: string;
-  date: string;
-}
-
-export interface FetchGateInfoParams {
-  actionId: 'FETCH_GATE_INFO';
-  flightNumber: string;
-  terminal?: string;
-}
-
-export interface FetchWeatherMetarParams {
-  actionId: 'FETCH_WEATHER_METAR';
-  icaoCode: string;
-}
-
-export interface FetchNotamParams {
-  actionId: 'FETCH_NOTAM';
-  icaoCode: string;
-  notamType?: 'airport' | 'enroute' | 'fdc';
-}
-
-export interface RebookPassengerParams {
-  actionId: 'REBOOK_PASSENGER';
-  passengerId: string;
-  originalFlight: string;
-  targetFlight: string;
-  seatPreference?: 'window' | 'aisle' | 'middle';
-}
-
-export interface EscalateToHumanParams {
-  actionId: 'ESCALATE_TO_HUMAN';
-  reason: string;
-  priority: 'normal' | 'high' | 'critical';
-}
-
-export interface PlaybackAnnouncementParams {
-  actionId: 'PLAYBACK_ANNOUNCEMENT';
-  gate: string;
-  message: string;
-  language?: string;
-}
-
-export interface LogIncidentParams {
-  actionId: 'LOG_INCIDENT';
-  incidentType: string;
-  description: string;
-  flightNumber?: string;
-}
-
-export interface AviationTaskResult {
-  success: boolean;
-  data: Record<string, unknown>;
-  summary: string;
-}
-
-// Socket.io typed event maps
+// Socket.io typed events
 export interface ServerToClientEvents {
-  'state:update':  (state: SystemState) => void;
-  'task:update':   (task: AviationTask) => void;
-  'audio:chunk':   (chunk: ArrayBuffer) => void;
-  'session:start': (sessionId: string) => void;
-  'session:end':   (sessionId: string, latency: TurnLatency) => void;
-  'error':         (err: PipelineError) => void;
+  "pipeline:state": (event: StateTransitionEvent) => void;
+  "asr:partial": (data: { text: string; sessionId: string }) => void;
+  "asr:final": (data: { text: string; sessionId: string }) => void;
+  "reasoning:intent": (intent: ExtractedIntent) => void;
+  "tts:audio_chunk": (chunk: ArrayBuffer) => void;
+  "tts:complete": (data: { sessionId: string }) => void;
+  "telemetry:snapshot": (snapshot: TelemetrySnapshot) => void;
+  "vad:probability": (data: { probability: number; isSpeech: boolean }) => void;
+  "session:error": (data: { code: string; message: string }) => void;
+  "session:ready": (data: { sessionId: string; protocolVersion: string }) => void;
 }
 
 export interface ClientToServerEvents {
-  'audio:chunk':    (packet: Omit<AudioPacket, 'isSpeech' | 'rmsDb'>) => void;
-  'session:abort':  (sessionId: string) => void;
-  'session:config': (config: SessionConfig) => void;
+  "audio:chunk": (packet: ArrayBuffer) => void;
+  "session:start": (data: { clientVersion: string }) => void;
+  "session:stop": () => void;
+  "tts:interrupt": () => void;
 }
 
-export interface SessionConfig {
-  clientId: string;
-  audioSpec: AudioSpec;
-  language: string;
-  guardrailsEnabled: boolean;
+// API Response Types
+export interface FlightStatusResponse {
+  readonly flightNumber: string;
+  readonly status: "ON_TIME" | "DELAYED" | "CANCELLED" | "LANDED" | "UNKNOWN";
+  readonly scheduledDeparture: string;
+  readonly estimatedDeparture?: string;
+  readonly gate?: string;
+  readonly terminal?: string;
+  readonly delayMinutes?: number;
+  readonly source: "live" | "mock";
 }
+
+export interface BaggageTrackingResponse {
+  readonly baggageId: string;
+  readonly carousel?: number;
+  readonly status:
+    | "IN_TRANSIT"
+    | "AT_CAROUSEL"
+    | "DELIVERED"
+    | "DELAYED"
+    | "LOST";
+  readonly lastUpdated: string;
+}
+
+export interface WeatherBriefingResponse {
+  readonly airport: string;
+  readonly icaoCode: string;
+  readonly rawMetar: string;
+  readonly windDirection: number;
+  readonly windSpeedKts: number;
+  readonly visibilityMiles: number;
+  readonly conditions: string;
+  readonly timestamp: string;
+}
+
+export interface GateInfoResponse {
+  readonly flightNumber: string;
+  readonly gate: string;
+  readonly terminal: string;
+  readonly boardingTime?: string;
+  readonly walkingMinutes?: number;
+}
+
+// Error Codes
+export const ErrorCode = {
+  INVALID_STATE_TRANSITION: "INVALID_STATE_TRANSITION",
+  AUDIO_BUFFER_OVERFLOW: "AUDIO_BUFFER_OVERFLOW",
+  ASR_CONNECTION_FAILED: "ASR_CONNECTION_FAILED",
+  LLM_RATE_LIMITED: "LLM_RATE_LIMITED",
+  LLM_INVALID_RESPONSE: "LLM_INVALID_RESPONSE",
+  TOOL_EXECUTION_FAILED: "TOOL_EXECUTION_FAILED",
+  TTS_CONNECTION_FAILED: "TTS_CONNECTION_FAILED",
+  SESSION_TIMEOUT: "SESSION_TIMEOUT",
+  PROTOCOL_VERSION_MISMATCH: "PROTOCOL_VERSION_MISMATCH",
+  GOVERNANCE_VIOLATION: "GOVERNANCE_VIOLATION",
+} as const;
+
+export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

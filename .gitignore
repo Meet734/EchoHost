@@ -17,6 +17,7 @@ server/models/*.gguf
 node_modules/
 client/node_modules/
 server/node_modules/
+server/package-lock.json
 
 #Build Outputs
 dist/

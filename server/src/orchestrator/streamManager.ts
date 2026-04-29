@@ -1,358 +1,237 @@
-import { Server, Socket } from 'socket.io';
-import { v4 as uuidv4 } from 'uuid';
-import { vadProcessor } from '../utils/vadProcessor';
+import type { Server, Socket } from 'socket.io';
+import { randomUUID } from 'crypto';
+import { AUDIO_SPEC } from '../../../shared/types';
 import type {
   AudioPacket,
-  SystemState,
-  PipelinePhase,
-  TurnLatency,
-  SessionConfig,
+  AviationTask,
+  ClientToServerEvents,
   PipelineError,
   PipelineErrorCode,
-  AviationTask,
+  PipelinePhase,
   ServerToClientEvents,
-  ClientToServerEvents,
+  SessionConfig,
+  SystemState,
+  TurnLatency,
 } from '../../../shared/types';
+import { vadProcessor } from '../utils/vadProcessor';
+import { ASRService, type TranscriptEvent } from '../services/asrService';
+import { ReasoningService } from '../services/reasoningService';
+import { TTSService } from '../services/ttsService';
 
-// ─── Service interfaces (implementations live in services/) ──────────────────
+type TypedServer = Server<ClientToServerEvents, ServerToClientEvents>;
+type TypedSocket = Socket<ClientToServerEvents, ServerToClientEvents>;
 
-export interface ASRService {
-  // Opens a streaming ASR session, returns an async iterator of transcript tokens
-  startStream(sessionId: string, language: string): AsyncIterable<ASRToken>;
-  // Feed a raw PCM-S16LE chunk into the active stream
-  pushChunk(sessionId: string, chunk: Buffer): Promise<void>;
-  // Signal end-of-speech and await the final transcript
-  finalise(sessionId: string): Promise<string>;
-  // Abort without waiting for result
-  abort(sessionId: string): void;
-}
-
-export interface ReasoningService {
-  // Takes a final transcript, returns intent + ordered list of aviation tasks
-  reason(sessionId: string, transcript: string, language: string): Promise<ReasoningResult>;
-}
-
-export interface TTSService {
-  // Synthesise text and stream raw PCM-S16LE chunks via callback
-  synthesise(
-    sessionId: string,
-    text: string,
-    onChunk: (pcm: Buffer) => void,
-    onDone: () => void,
-    onError: (err: Error) => void,
-  ): Promise<void>;
-  // Stop an in-progress synthesis
-  abort(sessionId: string): void;
-}
-
-export interface ReasoningResult {
-  intent: string;
-  responseText: string; // fed into TTS
-  tasks: AviationTask[];
-}
-
-// ─── Per-connection session context ──────────────────────────────────────────
+// How long silence must persist before we finalise the ASR turn
+const SILENCE_DEBOUNCE_MS = 800;
 
 interface SessionContext {
+  socketId: string;
   sessionId: string;
-  config: SessionConfig;
   phase: PipelinePhase;
   transcript: string;
+  language: string;
+  clientId: string;
   isFinal: boolean;
   intent: string | null;
   lastTurnLatency: TurnLatency | null;
-  error: PipelineError | null;
+  asrInitialised: boolean;
+  isFinalizingTurn: boolean; // guard against duplicate finalise calls
 
-  // Latency timestamps — all in epoch ms
+  // Latency tracking — all epoch ms
   vadOnsetAt: number | null;
   asrFirstTokenAt: number | null;
   reasoningDoneAt: number | null;
   ttsFirstByteAt: number | null;
-
-  // Guards against concurrent turn processing
-  isProcessing: boolean;
-
-  // Tracks silence duration after speech ends (ms)
-  silenceStartAt: number | null;
 }
 
-// How long of continuous silence triggers ASR finalise (ms)
-const SILENCE_TIMEOUT_MS = 800;
-
-// ─── StreamManager ────────────────────────────────────────────────────────────
-
-type TypedSocket = Socket<ClientToServerEvents, ServerToClientEvents>;
-type TypedServer = Server<ClientToServerEvents, ServerToClientEvents>;
+const DEFAULT_CONFIG: SessionConfig = {
+  clientId: 'web-client',
+  audioSpec: AUDIO_SPEC,
+  language: 'en-US',
+  guardrailsEnabled: true,
+};
 
 export class StreamManager {
-  private io: TypedServer;
-  private asr: ASRService;
-  private reasoning: ReasoningService;
-  private tts: TTSService;
+  private readonly io: TypedServer;
+  private readonly asrService: ASRService;
+  private readonly reasoningService: ReasoningService;
+  private readonly ttsService: TTSService;
 
-  // Active session contexts, keyed by socket.id
-  private sessions: Map<string, SessionContext> = new Map();
+  private readonly socketToSession: Map<string, SessionContext> = new Map();
+  private readonly sessionToSocket: Map<string, string> = new Map();
+  private readonly audioSerial: Map<string, Promise<void>> = new Map();
+  private readonly silenceTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
 
-  // Silence watchdog timers, keyed by socket.id
-  private silenceTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
-
-  constructor(io: TypedServer, asr: ASRService, reasoning: ReasoningService, tts: TTSService) {
+  constructor(
+    io: TypedServer,
+    asrService: ASRService,
+    reasoningService: ReasoningService,
+    ttsService: TTSService,
+  ) {
     this.io = io;
-    this.asr = asr;
-    this.reasoning = reasoning;
-    this.tts = tts;
-    this.attachConnectionHandler();
+    this.asrService = asrService;
+    this.reasoningService = reasoningService;
+    this.ttsService = ttsService;
+
+    this.asrService.on('transcript', (event) => this.handleTranscriptEvent(event));
+    this.asrService.on('stream:error', (event) => this.handleASRError(event.sessionId, event.message));
   }
 
-  // ─── Socket.io connection lifecycle ────────────────────────────────────────
+  public handleConnection(socket: TypedSocket): void {
+    console.log(`[INFO] [StreamManager] Client connected: ${socket.id}`);
+    this.createOrResetSession(socket, DEFAULT_CONFIG);
 
-  private attachConnectionHandler(): void {
-    this.io.on('connection', (socket: TypedSocket) => {
-      console.log(`[StreamManager] Client connected: ${socket.id}`);
-
-      socket.on('session:config', (config) => this.handleSessionConfig(socket, config));
-      socket.on('audio:chunk', (packet) => this.handleAudioChunk(socket, packet));
-      socket.on('session:abort', (sessionId) => this.handleSessionAbort(socket, sessionId));
-      socket.on('disconnect', (reason) => this.handleDisconnect(socket, reason));
+    socket.on('session:config', (config) => this.createOrResetSession(socket, config));
+    socket.on('audio:chunk',    (packet) => this.enqueueAudioChunk(socket, packet));
+    socket.on('session:abort',  (sessionId) => this.handleAbort(socket, sessionId));
+    socket.on('disconnect', () => {
+      this.destroySession(socket.id);
+      console.log(`[INFO] [StreamManager] Client disconnected: ${socket.id}`);
     });
   }
 
-  // ─── Event Handlers ────────────────────────────────────────────────────────
+  public async dispose(): Promise<void> {
+    for (const socketId of Array.from(this.socketToSession.keys())) {
+      this.destroySession(socketId);
+    }
+    await this.asrService.dispose();
+    this.ttsService.dispose();
+  }
 
-  private handleSessionConfig(socket: TypedSocket, config: SessionConfig): void {
-    // Tear down any previous session on this socket
-    this.teardownSession(socket.id);
+  // ─── Session Lifecycle ─────────────────────────────────────────────────────
 
-    const sessionId = uuidv4();
+  private createOrResetSession(socket: TypedSocket, config: SessionConfig): void {
+    this.destroySession(socket.id);
 
-    const ctx: SessionContext = {
+    const sessionId = randomUUID();
+    const context: SessionContext = {
+      socketId: socket.id,
       sessionId,
-      config,
       phase: 'idle',
       transcript: '',
+      language: config.language,
+      clientId: config.clientId,
       isFinal: false,
       intent: null,
       lastTurnLatency: null,
-      error: null,
+      asrInitialised: false,
+      isFinalizingTurn: false,
       vadOnsetAt: null,
       asrFirstTokenAt: null,
       reasoningDoneAt: null,
       ttsFirstByteAt: null,
-      isProcessing: false,
-      silenceStartAt: null,
     };
 
-    this.sessions.set(socket.id, ctx);
+    this.socketToSession.set(socket.id, context);
+    this.sessionToSocket.set(sessionId, socket.id);
     vadProcessor.createSession(sessionId);
 
     socket.emit('session:start', sessionId);
-    this.broadcastState(socket, ctx);
+    this.emitState(socket, context);
+    console.log(`[SUCCESS] [StreamManager] Session started: ${sessionId}`);
+  }
 
-    console.log(`[StreamManager] Session created: ${sessionId} for client ${config.clientId}`);
+  private destroySession(socketId: string): void {
+    const context = this.socketToSession.get(socketId);
+    if (!context) return;
+
+    this.clearSilenceTimer(socketId);
+    this.ttsService.abort(context.sessionId);
+
+    if (context.asrInitialised) {
+      this.asrService.destroySession(context.sessionId);
+    }
+
+    vadProcessor.destroySession(context.sessionId);
+    this.sessionToSocket.delete(context.sessionId);
+    this.socketToSession.delete(socketId);
+    this.audioSerial.delete(socketId);
+
+    console.log(`[INFO] [StreamManager] Session destroyed: ${context.sessionId}`);
+  }
+
+  // ─── Audio Ingestion ───────────────────────────────────────────────────────
+
+  // Serialises per-socket audio processing to prevent out-of-order VAD/ASR calls
+  private enqueueAudioChunk(
+    socket: TypedSocket,
+    packet: Omit<AudioPacket, 'isSpeech' | 'rmsDb'>,
+  ): void {
+    const previous = this.audioSerial.get(socket.id) ?? Promise.resolve();
+    const next = previous
+      .catch(() => undefined)
+      .then(async () => this.handleAudioChunk(socket, packet));
+
+    this.audioSerial.set(socket.id, next);
+    void next.finally(() => {
+      if (this.audioSerial.get(socket.id) === next) {
+        this.audioSerial.delete(socket.id);
+      }
+    });
   }
 
   private async handleAudioChunk(
     socket: TypedSocket,
     packet: Omit<AudioPacket, 'isSpeech' | 'rmsDb'>,
   ): Promise<void> {
-    const ctx = this.sessions.get(socket.id);
-    if (!ctx) return; // client sent audio before session:config
+    const context = this.socketToSession.get(socket.id);
+    if (!context) return;
 
-    // Skip incoming audio while the system is speaking (half-duplex)
-    if (ctx.phase === 'speaking' || ctx.phase === 'processing') return;
+    // Drop audio while reasoning or speaking — half-duplex mode
+    if (context.phase === 'processing' || context.phase === 'speaking') return;
 
-    const pcm = Buffer.from(packet.payload as ArrayBuffer);
-
-    let vadResult;
-    try {
-      vadResult = await vadProcessor.process(ctx.sessionId, pcm);
-    } catch (err) {
-      this.transitionToError(socket, ctx, 'vad', 'VAD_STREAM_ERROR' as PipelineErrorCode, String(err));
+    const pcmChunk = toBuffer(packet.payload);
+    if (!pcmChunk || pcmChunk.byteLength === 0) {
+      console.error(`[ERROR] [StreamManager] Undecodable audio payload for session ${context.sessionId}`);
       return;
     }
 
-    // Attach VAD metadata back into the packet for downstream use
-    const enrichedPacket: AudioPacket = {
-      ...packet,
-      isSpeech: vadResult.isSpeech,
-      rmsDb: vadResult.rmsDb,
-    };
-
-    if (vadResult.isSpeech) {
-      this.clearSilenceTimer(socket.id);
-      ctx.silenceStartAt = null;
-
-      if (ctx.phase === 'idle') {
-        // Speech onset — start listening
-        ctx.vadOnsetAt = Date.now();
-        this.transition(socket, ctx, 'listening');
-
-        try {
-          // Kick off ASR stream — tokens arrive asynchronously
-          this.consumeASRStream(socket, ctx);
-        } catch (err) {
-          this.transitionToError(socket, ctx, 'asr', 'ASR_STREAM_TIMEOUT', String(err));
-          return;
-        }
-      }
-
-      // Feed chunk into the live ASR stream
-      if (ctx.phase === 'listening') {
-        try {
-          await this.asr.pushChunk(ctx.sessionId, pcm);
-        } catch (err) {
-          this.transitionToError(socket, ctx, 'asr', 'ASR_STREAM_TIMEOUT', String(err));
-        }
-      }
-    } else {
-      // Silence frame — start the watchdog if we were listening
-      if (ctx.phase === 'listening' && !this.silenceTimers.has(socket.id)) {
-        ctx.silenceStartAt = ctx.silenceStartAt ?? Date.now();
-        this.startSilenceTimer(socket, ctx);
-      }
-    }
-  }
-
-  private handleSessionAbort(socket: TypedSocket, sessionId: string): void {
-    const ctx = this.sessions.get(socket.id);
-    if (!ctx || ctx.sessionId !== sessionId) return;
-
-    console.log(`[StreamManager] Abort requested for session ${sessionId}`);
-    this.asr.abort(ctx.sessionId);
-    this.tts.abort(ctx.sessionId);
-    this.clearSilenceTimer(socket.id);
-    this.transition(socket, ctx, 'idle');
-    this.resetTurnState(ctx);
-  }
-
-  private handleDisconnect(socket: TypedSocket, reason: string): void {
-    console.log(`[StreamManager] Client disconnected: ${socket.id} (${reason})`);
-    this.teardownSession(socket.id);
-  }
-
-  // ─── Core Pipeline ─────────────────────────────────────────────────────────
-
-  // Consumes ASR token stream and keeps transcript updated in real-time
-  private async consumeASRStream(socket: TypedSocket, ctx: SessionContext): Promise<void> {
-    try {
-      for await (const token of this.asr.startStream(ctx.sessionId, ctx.config.language)) {
-        if (ctx.phase !== 'listening') break; // aborted mid-stream
-
-        if (ctx.asrFirstTokenAt === null) {
-          ctx.asrFirstTokenAt = Date.now();
-        }
-
-        ctx.transcript = token.partial;
-        ctx.isFinal = token.isFinal;
-        this.broadcastState(socket, ctx);
-      }
-    } catch (err) {
-      this.transitionToError(socket, ctx, 'asr', 'ASR_STREAM_TIMEOUT', String(err));
-    }
-  }
-
-  // Triggered when silence watchdog fires — finalise the turn and start reasoning
-  private async finaliseTurn(socket: TypedSocket, ctx: SessionContext): Promise<void> {
-    if (ctx.isProcessing || ctx.phase !== 'listening') return;
-    ctx.isProcessing = true;
-
-    let finalTranscript: string;
-    try {
-      finalTranscript = await this.asr.finalise(ctx.sessionId);
-    } catch (err) {
-      this.transitionToError(socket, ctx, 'asr', 'ASR_STREAM_TIMEOUT', String(err));
-      ctx.isProcessing = false;
-      return;
-    }
-
-    if (!finalTranscript.trim()) {
-      // Empty transcript — false trigger, reset silently
-      this.transition(socket, ctx, 'idle');
-      this.resetTurnState(ctx);
-      ctx.isProcessing = false;
-      return;
-    }
-
-    ctx.transcript = finalTranscript;
-    ctx.isFinal = true;
-    this.transition(socket, ctx, 'processing');
-    this.broadcastState(socket, ctx);
-
-    // ── Reasoning ────────────────────────────────────────────────────────────
-
-    let reasoningResult: ReasoningResult;
-    try {
-      reasoningResult = await this.reasoning.reason(
-        ctx.sessionId,
-        finalTranscript,
-        ctx.config.language,
+    if ((pcmChunk.byteLength & 1) !== 0 || pcmChunk.byteLength !== AUDIO_SPEC.CHUNK_BYTES) {
+      console.error(
+        `[ERROR] [StreamManager] Invalid chunk size: ${pcmChunk.byteLength}B ` +
+        `(expected ${AUDIO_SPEC.CHUNK_BYTES}B)`,
       );
-    } catch (err) {
-      this.transitionToError(socket, ctx, 'reasoning', 'NIM_UNAVAILABLE', String(err));
-      ctx.isProcessing = false;
       return;
     }
 
-    ctx.reasoningDoneAt = Date.now();
-    ctx.intent = reasoningResult.intent;
-
-    // Broadcast any aviation tasks the reasoning layer queued
-    for (const task of reasoningResult.tasks) {
-      socket.emit('task:update', task);
-    }
-
-    this.broadcastState(socket, ctx);
-
-    // ── TTS ──────────────────────────────────────────────────────────────────
-
-    this.transition(socket, ctx, 'speaking');
-
     try {
-      await this.tts.synthesise(
-        ctx.sessionId,
-        reasoningResult.responseText,
-        (pcm: Buffer) => {
-          if (ctx.ttsFirstByteAt === null) {
-            ctx.ttsFirstByteAt = Date.now();
-          }
-          // Stream raw PCM back to the client for playback
-          socket.emit('audio:chunk', pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength));
-        },
-        () => this.onTTSDone(socket, ctx),
-        (err) => this.transitionToError(socket, ctx, 'tts', 'TTS_STREAM_ERROR', err.message),
-      );
-    } catch (err) {
-      this.transitionToError(socket, ctx, 'tts', 'TTS_STREAM_ERROR', String(err));
-      ctx.isProcessing = false;
+      const vadResult = await vadProcessor.process(context.sessionId, pcmChunk);
+
+      if (vadResult.isSpeech) {
+        this.clearSilenceTimer(socket.id);
+
+        // Speech onset — open ASR stream and begin listening
+        if (!context.asrInitialised) {
+          this.asrService.createSession(context.sessionId, context.language);
+          context.asrInitialised = true;
+          context.vadOnsetAt = Date.now();
+        }
+
+        if (context.phase === 'idle') {
+          this.transition(socket, context, 'listening');
+        }
+
+        await this.asrService.pushAudio(context.sessionId, pcmChunk);
+
+      } else if (context.phase === 'listening') {
+        // Start the silence debounce — do not transition immediately
+        if (!this.silenceTimers.has(socket.id)) {
+          this.startSilenceTimer(socket, context);
+        }
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.emitError(socket, context, 'vad', 'UNKNOWN', message);
     }
   }
 
-  // Called when TTS finishes streaming — close out the turn
-  private onTTSDone(socket: TypedSocket, ctx: SessionContext): void {
-    const latency = this.computeLatency(ctx);
-    ctx.lastTurnLatency = latency;
+  // ─── Silence Debounce ──────────────────────────────────────────────────────
 
-    socket.emit('session:end', ctx.sessionId, latency);
-
-    this.transition(socket, ctx, 'idle');
-    this.resetTurnState(ctx);
-    ctx.isProcessing = false;
-
-    console.log(
-      `[StreamManager] Turn complete — e2e: ${latency.e2eMs}ms | ` +
-      `asr: ${latency.asrMs}ms | reasoning: ${latency.reasoningMs}ms | tts: ${latency.ttsMs}ms`,
-    );
-  }
-
-  // ─── Silence Watchdog ──────────────────────────────────────────────────────
-
-  private startSilenceTimer(socket: TypedSocket, ctx: SessionContext): void {
+  private startSilenceTimer(socket: TypedSocket, context: SessionContext): void {
     const timer = setTimeout(() => {
       this.silenceTimers.delete(socket.id);
-      this.finaliseTurn(socket, ctx).catch((err) => {
-        console.error(`[StreamManager] finaliseTurn threw: ${err}`);
-      });
-    }, SILENCE_TIMEOUT_MS);
+      this.onSilenceTimeout(socket, context);
+    }, SILENCE_DEBOUNCE_MS);
 
     this.silenceTimers.set(socket.id, timer);
   }
@@ -365,109 +244,248 @@ export class StreamManager {
     }
   }
 
-  // ─── FSM Transitions ───────────────────────────────────────────────────────
+  private onSilenceTimeout(socket: TypedSocket, context: SessionContext): void {
+    if (context.phase !== 'listening' || context.isFinalizingTurn) return;
 
-  private transition(socket: TypedSocket, ctx: SessionContext, next: PipelinePhase): void {
-    if (ctx.phase === next) return;
-    console.log(`[StreamManager] ${ctx.sessionId} | ${ctx.phase} → ${next}`);
-    ctx.phase = next;
-    ctx.error = null;
-    this.broadcastState(socket, ctx);
+    // Tell NIM to stop accepting audio and send the final transcript
+    this.asrService.finalise(context.sessionId);
+    this.transition(socket, context, 'processing');
   }
 
-  private transitionToError(
+  // ─── Transcript Events ─────────────────────────────────────────────────────
+
+  private handleTranscriptEvent(event: TranscriptEvent): void {
+    const socketId = this.sessionToSocket.get(event.sessionId);
+    if (!socketId) return;
+
+    const socket  = this.io.sockets.sockets.get(socketId) as TypedSocket | undefined;
+    const context = this.socketToSession.get(socketId);
+    if (!socket || !context) return;
+
+    // Track first-token latency
+    if (context.asrFirstTokenAt === null) {
+      context.asrFirstTokenAt = Date.now();
+    }
+
+    context.transcript = event.text;
+    context.isFinal    = event.isFinal;
+
+    if (!event.isFinal) {
+      // Partial transcript — update the client in real-time
+      this.emitState(socket, context);
+      return;
+    }
+
+    // Final transcript received — start the reasoning pipeline
+    if (context.isFinalizingTurn) return; // guard against duplicate isFinal
+
+    // isFinal can arrive while still in 'listening' (NIM beat our silence timer)
+    if (context.phase === 'listening') {
+      this.clearSilenceTimer(socketId);
+      this.transition(socket, context, 'processing');
+    }
+
+    if (context.phase === 'processing') {
+      void this.finalizeTurn(socket, context, event.text);
+    }
+  }
+
+  private handleASRError(sessionId: string, message: string): void {
+    const socketId = this.sessionToSocket.get(sessionId);
+    if (!socketId) return;
+
+    const socket  = this.io.sockets.sockets.get(socketId) as TypedSocket | undefined;
+    const context = this.socketToSession.get(socketId);
+    if (!socket || !context || context.phase === 'idle') return;
+
+    this.emitError(socket, context, 'asr', 'NIM_UNAVAILABLE', message);
+  }
+
+  // ─── Full Turn Pipeline ────────────────────────────────────────────────────
+
+  private async finalizeTurn(
     socket: TypedSocket,
-    ctx: SessionContext,
-    layer: PipelineError['layer'],
-    code: PipelineErrorCode,
-    message: string,
-  ): void {
-    const err: PipelineError = {
-      code,
-      message,
-      timestamp: new Date().toISOString(),
-      layer,
-    };
+    context: SessionContext,
+    finalTranscript: string,
+  ): Promise<void> {
+    context.isFinalizingTurn = true;
 
-    ctx.error = err;
-    ctx.phase = 'error';
-    this.broadcastState(socket, ctx);
-    socket.emit('error', err);
+    if (!finalTranscript.trim()) {
+      // Empty — false VAD trigger, reset silently
+      this.resetTurnState(context);
+      this.transition(socket, context, 'idle');
+      return;
+    }
 
-    console.error(`[StreamManager] Error [${layer}/${code}]: ${message}`);
+    // ── Reasoning ───────────────────────────────────────────────────────────
+    let reasoningResult;
+    try {
+      reasoningResult = await this.reasoningService.reason(
+        context.sessionId,
+        finalTranscript,
+        context.language,
+      );
+    } catch (err: unknown) {
+      this.emitError(socket, context, 'reasoning', 'NIM_UNAVAILABLE', String(err));
+      this.resetTurnState(context);
+      return;
+    }
 
-    // Clean up resources attached to the failed turn
-    this.asr.abort(ctx.sessionId);
-    this.tts.abort(ctx.sessionId);
-    this.clearSilenceTimer(socket.id);
-    this.resetTurnState(ctx);
-    ctx.isProcessing = false;
+    context.intent          = reasoningResult.intent;
+    context.reasoningDoneAt = Date.now();
+
+    // Broadcast any aviation tasks that were queued
+    for (const task of reasoningResult.tasks) {
+      socket.emit('task:update', task as AviationTask);
+    }
+
+    this.emitState(socket, context);
+
+    // ── TTS ──────────────────────────────────────────────────────────────────
+    this.transition(socket, context, 'speaking');
+
+    try {
+      await this.ttsService.synthesise(
+        context.sessionId,
+        reasoningResult.responseText,
+        (pcm: Buffer) => {
+          if (context.ttsFirstByteAt === null) {
+            context.ttsFirstByteAt = Date.now();
+          }
+          // Stream raw PCM to the client for AudioWorklet playback
+          // Cast required: pcm.buffer may be a SharedArrayBuffer in some runtimes
+          socket.emit(
+            'audio:chunk',
+            pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength) as ArrayBuffer,
+          );
+        },
+        () => this.onTTSDone(socket, context),
+        (err) => this.emitError(socket, context, 'tts', 'TTS_STREAM_ERROR', err.message),
+      );
+    } catch (err: unknown) {
+      this.emitError(socket, context, 'tts', 'TTS_STREAM_ERROR', String(err));
+      this.resetTurnState(context);
+    }
   }
 
-  // ─── State Broadcasting ────────────────────────────────────────────────────
+  private onTTSDone(socket: TypedSocket, context: SessionContext): void {
+    const latency = this.computeLatency(context);
+    context.lastTurnLatency = latency;
 
-  private broadcastState(socket: TypedSocket, ctx: SessionContext): void {
+    socket.emit('session:end', context.sessionId, latency);
+
+    console.log(
+      `[SUCCESS] [StreamManager] Turn complete — e2e: ${latency.e2eMs}ms | ` +
+      `asr: ${latency.asrMs}ms | reasoning: ${latency.reasoningMs}ms | tts: ${latency.ttsMs}ms`,
+    );
+
+    // Tear down the ASR session for this turn
+    if (context.asrInitialised) {
+      this.asrService.destroySession(context.sessionId);
+    }
+
+    this.resetTurnState(context);
+    this.transition(socket, context, 'idle');
+  }
+
+  // ─── Abort ─────────────────────────────────────────────────────────────────
+
+  private handleAbort(socket: TypedSocket, sessionId: string): void {
+    const context = this.socketToSession.get(socket.id);
+    if (!context || context.sessionId !== sessionId) return;
+
+    this.clearSilenceTimer(socket.id);
+    this.ttsService.abort(context.sessionId);
+
+    if (context.asrInitialised) {
+      this.asrService.destroySession(context.sessionId);
+    }
+
+    this.resetTurnState(context);
+    this.transition(socket, context, 'idle');
+  }
+
+  // ─── FSM Helpers ───────────────────────────────────────────────────────────
+
+  private transition(socket: TypedSocket, context: SessionContext, next: PipelinePhase): void {
+    if (context.phase === next) return;
+    console.log(`[INFO] [FSM] ${context.sessionId}: ${context.phase} -> ${next}`);
+    context.phase = next;
+    this.emitState(socket, context);
+  }
+
+  private emitState(socket: TypedSocket, context: SessionContext): void {
     const state: SystemState = {
-      phase: ctx.phase,
-      sessionId: ctx.sessionId,
-      transcript: ctx.transcript,
-      isFinal: ctx.isFinal,
-      intent: ctx.intent,
-      lastTurnLatency: ctx.lastTurnLatency,
+      phase: context.phase,
+      sessionId: context.sessionId,
+      transcript: context.transcript,
+      isFinal: context.isFinal,
+      intent: context.intent,
+      lastTurnLatency: context.lastTurnLatency,
       updatedAt: Date.now(),
-      error: ctx.error,
+      error: null,
     };
     socket.emit('state:update', state);
   }
 
-  // ─── Helpers ───────────────────────────────────────────────────────────────
+  private emitError(
+    socket: TypedSocket,
+    context: SessionContext,
+    layer: PipelineError['layer'],
+    code: PipelineErrorCode,
+    message: string,
+  ): void {
+    const errorPayload: PipelineError = { code, message, timestamp: new Date().toISOString(), layer };
+    context.phase = 'error';
 
-  private computeLatency(ctx: SessionContext): TurnLatency {
-    const now = Date.now();
-    const onset = ctx.vadOnsetAt ?? now;
-    const asrFirst = ctx.asrFirstTokenAt ?? now;
-    const reasoningDone = ctx.reasoningDoneAt ?? now;
-    const ttsFirst = ctx.ttsFirstByteAt ?? now;
+    const state: SystemState = {
+      phase: 'error',
+      sessionId: context.sessionId,
+      transcript: context.transcript,
+      isFinal: context.isFinal,
+      intent: context.intent,
+      lastTurnLatency: context.lastTurnLatency,
+      updatedAt: Date.now(),
+      error: errorPayload,
+    };
+
+    socket.emit('state:update', state);
+    socket.emit('error', errorPayload);
+    console.error(`[ERROR] [StreamManager] ${layer}/${code}: ${message}`);
+  }
+
+  // ─── Latency & State Reset ─────────────────────────────────────────────────
+
+  private computeLatency(context: SessionContext): TurnLatency {
+    const now           = Date.now();
+    const onset         = context.vadOnsetAt      ?? now;
+    const asrFirst      = context.asrFirstTokenAt  ?? now;
+    const reasoningDone = context.reasoningDoneAt  ?? now;
+    const ttsFirst      = context.ttsFirstByteAt   ?? now;
 
     return {
-      asrMs: asrFirst - onset,
+      asrMs:       asrFirst      - onset,
       reasoningMs: reasoningDone - asrFirst,
-      ttsMs: ttsFirst - reasoningDone,
-      e2eMs: ttsFirst - onset,
+      ttsMs:       ttsFirst      - reasoningDone,
+      e2eMs:       ttsFirst      - onset,
     };
   }
 
-  // Zero out per-turn tracking fields without destroying session identity
-  private resetTurnState(ctx: SessionContext): void {
-    ctx.transcript = '';
-    ctx.isFinal = false;
-    ctx.intent = null;
-    ctx.error = null;
-    ctx.vadOnsetAt = null;
-    ctx.asrFirstTokenAt = null;
-    ctx.reasoningDoneAt = null;
-    ctx.ttsFirstByteAt = null;
-    ctx.silenceStartAt = null;
-  }
-
-  // Full teardown — called on disconnect or reconfigure
-  private teardownSession(socketId: string): void {
-    const ctx = this.sessions.get(socketId);
-    if (!ctx) return;
-
-    this.clearSilenceTimer(socketId);
-    this.asr.abort(ctx.sessionId);
-    this.tts.abort(ctx.sessionId);
-    vadProcessor.destroySession(ctx.sessionId);
-    this.sessions.delete(socketId);
-
-    console.log(`[StreamManager] Session torn down: ${ctx.sessionId}`);
+  private resetTurnState(context: SessionContext): void {
+    context.transcript       = '';
+    context.isFinal          = false;
+    context.intent           = null;
+    context.asrInitialised   = false;
+    context.isFinalizingTurn = false;
+    context.vadOnsetAt       = null;
+    context.asrFirstTokenAt  = null;
+    context.reasoningDoneAt  = null;
+    context.ttsFirstByteAt   = null;
   }
 }
 
-// ASR token shape — partial updates stream in, isFinal marks the last one
-export interface ASRToken {
-  partial: string;
-  isFinal: boolean;
-  confidence?: number;
+function toBuffer(payload: AudioPacket['payload']): Buffer | null {
+  if (Buffer.isBuffer(payload)) return payload;
+  if (payload instanceof ArrayBuffer) return Buffer.from(payload);
+  return null;
 }
