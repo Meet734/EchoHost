@@ -342,3 +342,4 @@ Generate a spoken response.`;
       confidence: typeof obj.confidence === "number" ? obj.confidence : 0.5,
     };
   }
+}

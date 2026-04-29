@@ -1,11 +1,5 @@
 import React from 'react';
-import {
-  Wifi,
-  WifiOff,
-  Mic,
-  MicOff,
-  Copy,
-} from 'lucide-react';
+import { Wifi, WifiOff, Mic, MicOff } from 'lucide-react';
 import { AudioVisualizer } from './AudioVisualizer';
 import { PipelineStatus } from './PipelineStatus';
 import { TranscriptBox } from './TranscriptBox';
@@ -32,7 +26,6 @@ export const Dashboard: React.FC<DashboardProps> = ({
   activityEntries,
 }) => {
   const [isLoading, setIsLoading] = React.useState(false);
-  const [copiedId, setCopiedId] = React.useState(false);
 
   const handleStartStreaming = async () => {
     setIsLoading(true);
@@ -45,190 +38,123 @@ export const Dashboard: React.FC<DashboardProps> = ({
     }
   };
 
-  const copySessionId = () => {
-    if (sessionId) {
-      navigator.clipboard.writeText(sessionId);
-      setCopiedId(true);
-      setTimeout(() => setCopiedId(false), 2000);
-    }
-  };
-
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-50 p-6">
-      <div className="max-w-7xl mx-auto space-y-6">
+    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-50 p-8">
+      <div className="max-w-4xl mx-auto">
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-slate-700 pb-4">
-          <div>
-            <h1 className="text-3xl font-bold text-slate-100">EchoHost Dashboard</h1>
-            <p className="text-sm text-slate-400 mt-1">
-              Low-latency S2S Aviation AI Worker
-            </p>
-          </div>
-
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              {socketConnected ? (
-                <>
-                  <Wifi className="w-5 h-5 text-green-400" />
-                  <span className="text-sm text-green-400">Connected</span>
-                </>
-              ) : (
-                <>
-                  <WifiOff className="w-5 h-5 text-red-400" />
-                  <span className="text-sm text-red-400">Disconnected</span>
-                </>
-              )}
-            </div>
-          </div>
+        <div className="text-center mb-12">
+          <h1 className="text-5xl font-bold text-slate-100 mb-2">EchoHost</h1>
+          <p className="text-lg text-slate-400">Aviation AI Voice Assistant</p>
         </div>
 
-        {/* Session Info */}
-        {sessionId && (
-          <div className="bg-slate-900 border border-slate-700 rounded-lg p-4 flex items-center justify-between">
-            <div>
-              <p className="text-xs text-slate-500">Session ID</p>
-              <p className="text-sm font-mono text-slate-300">{sessionId}</p>
-            </div>
-            <button
-              onClick={copySessionId}
-              className="p-2 hover:bg-slate-800 rounded transition-colors"
-              title="Copy Session ID"
-            >
-              <Copy className={`w-4 h-4 ${copiedId ? 'text-green-400' : 'text-slate-400'}`} />
-            </button>
-          </div>
-        )}
-
-        {/* Main Content Grid */}
-        <div className="grid grid-cols-3 gap-6">
-          {/* Left Column - Audio and Pipeline */}
-          <div className="col-span-2 space-y-6">
-            {/* Audio Visualizer */}
-            <div className="bg-slate-900 border border-slate-700 rounded-lg p-4">
-              <h3 className="text-sm font-semibold text-slate-200 mb-4">Real-time Audio Level</h3>
-              <AudioVisualizer
-                rmsDb={state?.transcript ? -20 : -60}
-                isActive={isStreaming}
-              />
-            </div>
-
-            {/* Pipeline Status */}
-            <div className="bg-slate-900 border border-slate-700 rounded-lg p-4">
-              <PipelineStatus
-                phase={state?.phase ?? 'error'}
-                isStreaming={isStreaming}
-              />
-            </div>
-
-            {/* Control Button */}
-            <div className="bg-slate-900 border border-slate-700 rounded-lg p-4">
-              <button
-                onClick={isStreaming ? onStopStreaming : handleStartStreaming}
-                disabled={!socketConnected || isLoading}
-                className={`w-full py-3 px-4 rounded-lg font-semibold flex items-center justify-center gap-2 transition-all ${
-                  isStreaming
-                    ? 'bg-red-600 hover:bg-red-700 disabled:bg-red-900'
-                    : 'bg-blue-600 hover:bg-blue-700 disabled:bg-blue-900'
-                } disabled:opacity-50 disabled:cursor-not-allowed text-white`}
-              >
-                {isStreaming ? (
-                  <>
-                    <MicOff className="w-5 h-5" />
-                    Stop Streaming
-                  </>
-                ) : (
-                  <>
-                    <Mic className="w-5 h-5" />
-                    {isLoading ? 'Starting...' : 'Start Streaming'}
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-
-          {/* Right Column - Info and Latency */}
-          <div className="space-y-6">
-            {/* System State Info */}
-            <div className="bg-slate-900 border border-slate-700 rounded-lg p-4 space-y-3">
-              <h3 className="text-sm font-semibold text-slate-200">System State</h3>
-
+        {/* Status & Control Section */}
+        <div className="space-y-6">
+          {/* Connection Status */}
+          <div className="bg-slate-800 border border-slate-700 rounded-xl p-6">
+            <div className="flex items-center justify-between mb-6">
               <div>
-                <p className="text-xs text-slate-500">Phase</p>
-                <p className="text-sm font-mono text-slate-300">{state?.phase ?? 'N/A'}</p>
+                <p className="text-sm text-slate-500 mb-2">Server Status</p>
+                <div className="flex items-center gap-3">
+                  {socketConnected ? (
+                    <>
+                      <div className="w-4 h-4 bg-green-500 rounded-full animate-pulse" />
+                      <span className="text-xl font-semibold text-green-400">Connected</span>
+                    </>
+                  ) : (
+                    <>
+                      <div className="w-4 h-4 bg-red-500 rounded-full" />
+                      <span className="text-xl font-semibold text-red-400">Disconnected</span>
+                    </>
+                  )}
+                </div>
               </div>
-
-              <div>
-                <p className="text-xs text-slate-500">Session</p>
-                <p className="text-sm font-mono text-slate-300">
-                  {state?.sessionId ? state.sessionId.slice(0, 8) + '...' : 'None'}
-                </p>
-              </div>
-
-              {state?.lastTurnLatency && (
-                <div className="pt-2 border-t border-slate-700 space-y-2">
-                  <p className="text-xs font-semibold text-slate-300">Latency Breakdown</p>
-
-                  <div className="flex justify-between text-xs">
-                    <span className="text-slate-500">ASR</span>
-                    <span className="text-slate-300 font-mono">
-                      {state.lastTurnLatency.asrMs}ms
-                    </span>
-                  </div>
-
-                  <div className="flex justify-between text-xs">
-                    <span className="text-slate-500">Reasoning</span>
-                    <span className="text-slate-300 font-mono">
-                      {state.lastTurnLatency.reasoningMs}ms
-                    </span>
-                  </div>
-
-                  <div className="flex justify-between text-xs">
-                    <span className="text-slate-500">TTS</span>
-                    <span className="text-slate-300 font-mono">
-                      {state.lastTurnLatency.ttsMs}ms
-                    </span>
-                  </div>
-
-                  <div className="flex justify-between text-xs pt-2 border-t border-slate-700">
-                    <span className="text-slate-400 font-semibold">E2E</span>
-                    <span className="text-green-400 font-mono font-bold">
-                      {state.lastTurnLatency.e2eMs}ms
-                    </span>
-                  </div>
+              {socketConnected && sessionId && (
+                <div className="text-right">
+                  <p className="text-xs text-slate-500">Session</p>
+                  <p className="text-sm font-mono text-slate-300">{sessionId.slice(0, 12)}...</p>
                 </div>
               )}
             </div>
 
-            {/* Error State */}
-            {state?.error && (
-              <div className="bg-red-950 border border-red-700 rounded-lg p-4 space-y-2">
-                <p className="text-xs font-semibold text-red-300">Error</p>
-                <p className="text-xs text-red-200">{state.error.message}</p>
-                <p className="text-xs text-red-400">
-                  {state.error.layer ? `Layer: ${state.error.layer}` : 'Unknown layer'}
-                </p>
+            {!socketConnected && (
+              <div className="bg-red-950 border border-red-800 rounded-lg p-4 text-sm text-red-200">
+                ⚠️ Unable to connect to server. Make sure the backend is running on http://localhost:3001
               </div>
             )}
           </div>
-        </div>
 
-        {/* Bottom Row - Transcript and Activity Feed */}
-        <div className="grid grid-cols-2 gap-6 h-64">
-          <div className="bg-slate-900 border border-slate-700 rounded-lg p-4">
-            <TranscriptBox
-              currentText={state?.transcript ?? ''}
-              isFinal={state?.isFinal ?? false}
-            />
+          {/* Pipeline Status */}
+          <div className="bg-slate-800 border border-slate-700 rounded-xl p-6">
+            <p className="text-sm text-slate-500 mb-4">Pipeline Status</p>
+            <PipelineStatus phase={state?.phase ?? 'error'} isStreaming={isStreaming} />
           </div>
 
-          <div className="bg-slate-900 border border-slate-700 rounded-lg p-4">
+          {/* Audio Visualizer */}
+          {isStreaming && (
+            <div className="bg-slate-800 border border-slate-700 rounded-xl p-6">
+              <p className="text-sm text-slate-500 mb-4">Audio Level</p>
+              <AudioVisualizer rmsDb={state?.transcript ? -20 : -60} isActive={isStreaming} />
+            </div>
+          )}
+
+          {/* Main Control Button */}
+          <button
+            onClick={isStreaming ? onStopStreaming : handleStartStreaming}
+            disabled={!socketConnected || isLoading}
+            className={`w-full py-4 px-6 rounded-xl font-bold text-lg flex items-center justify-center gap-3 transition-all duration-200 ${
+              isStreaming
+                ? 'bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800'
+                : 'bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800'
+            } disabled:opacity-50 disabled:cursor-not-allowed text-white shadow-lg hover:shadow-xl disabled:shadow-none`}
+          >
+            {isStreaming ? (
+              <>
+                <MicOff className="w-6 h-6" />
+                Stop Recording
+              </>
+            ) : (
+              <>
+                <Mic className="w-6 h-6" />
+                {isLoading ? 'Starting...' : 'Start Recording'}
+              </>
+            )}
+          </button>
+
+          {/* Instructions */}
+          <div className="bg-blue-950 border border-blue-800 rounded-xl p-4 text-sm text-blue-200">
+            <p className="font-semibold mb-2">📝 How to use:</p>
+            <ul className="space-y-1 text-xs">
+              <li>✓ Click "Start Recording" to begin</li>
+              <li>✓ Speak your aviation question or request</li>
+              <li>✓ The AI will process and respond</li>
+              <li>✓ Click "Stop Recording" when done</li>
+            </ul>
+          </div>
+
+          {/* Transcript Area */}
+          <div className="bg-slate-800 border border-slate-700 rounded-xl p-6">
+            <p className="text-sm text-slate-500 mb-4">Transcript</p>
+            <TranscriptBox currentText={state?.transcript ?? ''} isFinal={state?.isFinal ?? false} />
+          </div>
+
+          {/* Activity Feed */}
+          <div className="bg-slate-800 border border-slate-700 rounded-xl p-6">
+            <p className="text-sm text-slate-500 mb-4">Activity</p>
             <ActivityFeed entries={activityEntries} />
           </div>
+
+          {/* Error Display */}
+          {state?.error && (
+            <div className="bg-red-950 border border-red-700 rounded-xl p-4">
+              <p className="text-sm font-semibold text-red-300 mb-2">❌ Error</p>
+              <p className="text-sm text-red-200">{state.error.message}</p>
+            </div>
+          )}
         </div>
 
         {/* Footer */}
-        <div className="text-center text-xs text-slate-500 pt-4 border-t border-slate-700">
-          <p>EchoHost v0.1.0 - Powered by NVIDIA NIM</p>
+        <div className="text-center text-xs text-slate-600 mt-12 pt-6 border-t border-slate-700">
+          <p>EchoHost v0.1.0 • Powered by NVIDIA NIM</p>
         </div>
       </div>
     </div>

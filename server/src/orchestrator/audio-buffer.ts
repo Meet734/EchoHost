@@ -126,3 +126,4 @@ export class AudioRingBuffer {
     this._writeHead = (this._writeHead + len) % this.capacity;
     this._size = Math.min(this._size + len, this.capacity);
   }
+}

@@ -2,13 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import {
   AUDIO_SPEC,
+  PROTOCOL_VERSION,
   type ClientToServerEvents,
   type ServerToClientEvents,
   type SessionConfig,
   type SystemState,
 } from '../../../shared/types';
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL ?? 'http://localhost:8080';
+const SERVER_URL = import.meta.env.VITE_SOCKET_URL ?? 'http://localhost:3001';
 
 export interface UseVoiceStreamOptions {
   clientId?: string;
@@ -69,21 +70,18 @@ export function useVoiceStream(options: UseVoiceStreamOptions = {}): UseVoiceStr
     return newSocket;
   }, []);
 
-  const emitSessionConfig = useCallback((): void => {
-    const config: SessionConfig = {
-      clientId: options.clientId ?? 'web-client',
-      language: options.language ?? 'en-US',
-      guardrailsEnabled: true,
-      audioSpec: AUDIO_SPEC,
-    };
-    socket.emit('session:config', config);
-  }, [options.clientId, options.language, socket]);
+  const emitSessionStart = useCallback((): void => {
+    console.log('[DEBUG] Emitting session:start');
+    socket.emit('session:start', {
+      clientVersion: PROTOCOL_VERSION,
+    });
+  }, [socket]);
 
   useEffect(() => {
     const onConnect = (): void => {
       console.log('[DEBUG] Socket connected');
       setSocketConnected(true);
-      emitSessionConfig();
+      emitSessionStart();
     };
 
     const onDisconnect = (): void => {
@@ -92,21 +90,43 @@ export function useVoiceStream(options: UseVoiceStreamOptions = {}): UseVoiceStr
       setSessionId(null);
     };
 
-    const onSessionStart = (incomingSessionId: string): void => {
-      console.log('[DEBUG] Session started:', incomingSessionId);
-      setSessionId(incomingSessionId);
+    const onSessionReady = (data: { sessionId: string; protocolVersion: string }): void => {
+      console.log('[DEBUG] Session ready:', data.sessionId);
+      setSessionId(data.sessionId);
       sequenceRef.current = 0;
     };
 
-    const onStateUpdate = (nextState: SystemState): void => {
-      console.log('[DEBUG] State updated:', nextState.phase);
-      setState(nextState);
+    const onPipelineStateChange = (event: any): void => {
+      console.log('[DEBUG] Pipeline state changed:', event.to);
+      setState((prev) => prev ? { ...prev, phase: event.to } : null);
+    };
+
+    const onASRFinal = (data: { text: string; sessionId: string }): void => {
+      console.log('[DEBUG] ASR final:', data.text);
+      setState((prev) => prev ? { ...prev, transcript: data.text, isFinal: true } : null);
+    };
+
+    const onASRPartial = (data: { text: string; sessionId: string }): void => {
+      setState((prev) => prev ? { ...prev, transcript: data.text, isFinal: false } : null);
+    };
+
+    const onSessionError = (data: { code: string; message: string }): void => {
+      console.error('[ERROR] Session error:', data.code, data.message);
+      setState((prev) =>
+        prev ? {
+          ...prev,
+          error: { code: data.code, message: data.message, layer: 'server' },
+        } : null
+      );
     };
 
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
-    socket.on('session:start', onSessionStart);
-    socket.on('state:update', onStateUpdate);
+    socket.on('session:ready', onSessionReady);
+    socket.on('pipeline:state', onPipelineStateChange);
+    socket.on('asr:final', onASRFinal);
+    socket.on('asr:partial', onASRPartial);
+    socket.on('session:error', onSessionError);
 
     // Log initial connection status
     if (socket.connected) {
@@ -117,10 +137,13 @@ export function useVoiceStream(options: UseVoiceStreamOptions = {}): UseVoiceStr
     return () => {
       socket.off('connect', onConnect);
       socket.off('disconnect', onDisconnect);
-      socket.off('session:start', onSessionStart);
-      socket.off('state:update', onStateUpdate);
+      socket.off('session:ready', onSessionReady);
+      socket.off('pipeline:state', onPipelineStateChange);
+      socket.off('asr:final', onASRFinal);
+      socket.off('asr:partial', onASRPartial);
+      socket.off('session:error', onSessionError);
     };
-  }, [emitSessionConfig, socket]);
+  }, [emitSessionStart, socket]);
 
   const startStreaming = useCallback(async (): Promise<void> => {
     if (isStreaming) {
@@ -137,7 +160,7 @@ export function useVoiceStream(options: UseVoiceStreamOptions = {}): UseVoiceStr
       video: false,
     });
 
-    const audioContext = new AudioContext({ sampleRate: AUDIO_SPEC.SAMPLE_RATE });
+    const audioContext = new AudioContext({ sampleRate: AUDIO_SPEC.sampleRate });
     await audioContext.audioWorklet.addModule(
       URL.createObjectURL(new Blob([buildWorkletScript()], { type: 'application/javascript' })),
     );
@@ -148,8 +171,8 @@ export function useVoiceStream(options: UseVoiceStreamOptions = {}): UseVoiceStr
       numberOfOutputs: 0,
       channelCount: 1,
       processorOptions: {
-        targetSampleRate: AUDIO_SPEC.SAMPLE_RATE,
-        chunkSamples: AUDIO_SPEC.CHUNK_BYTES / 2,
+        targetSampleRate: AUDIO_SPEC.sampleRate,
+        chunkSamples: AUDIO_SPEC.frameSize,
       },
     });
 
@@ -158,20 +181,26 @@ export function useVoiceStream(options: UseVoiceStreamOptions = {}): UseVoiceStr
         return;
       }
 
-      const payload = event.data;
-      if (!(payload instanceof ArrayBuffer)) {
+      const pcmPayload = event.data;
+      if (!(pcmPayload instanceof ArrayBuffer)) {
         return;
       }
 
-      socket.emit('audio:chunk', {
-        seq: sequenceRef.current,
-        capturedAt: Date.now(),
-        payload,
-        sessionId,
-      });
+      // Construct binary packet: [seq: Uint32][capturedAt: Float64][pcm: Int16[]]
+      const totalSize = 4 + 8 + pcmPayload.byteLength;
+      const packet = new ArrayBuffer(totalSize);
+      const view = new DataView(packet);
+      
+      view.setUint32(0, sequenceRef.current, true); // seq (little-endian)
+      view.setFloat64(4, Date.now(), true); // capturedAt (little-endian)
+      
+      // Copy PCM data
+      new Uint8Array(packet).set(new Uint8Array(pcmPayload), 12);
+
+      socket.emit('audio:chunk', packet);
 
       if (sequenceRef.current % 50 === 0) {
-        console.log(`[DEBUG] Audio chunk sent: seq=${sequenceRef.current}`);
+        console.log(`[DEBUG] Audio chunk sent: seq=${sequenceRef.current}, size=${totalSize}`);
       }
       sequenceRef.current += 1;
     };

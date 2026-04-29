@@ -5,6 +5,10 @@
     "moduleResolution": "node",
     "lib": ["ES2022"],
     "outDir": "./dist",
+    "baseUrl": ".",
+    "paths": {
+      "@echohost/shared": ["../shared/types/index.ts"]
+    },
     "rootDirs": ["./src", "../shared"],
     "strict": true,
     "esModuleInterop": true,

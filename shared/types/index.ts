@@ -10,10 +10,36 @@ export interface AudioChunk {
 // Binary wire format: [seq: Uint32 (4 bytes)] [capturedAt: Float64 (8 bytes)] [pcm: Int16[] (N bytes)]
 export const AUDIO_HEADER_BYTES = 12 as const;
 
+// Audio specification (16 kHz mono PCM)
+export const AUDIO_SPEC = {
+  sampleRate: 16_000 as const,
+  channels: 1 as const,
+  bitDepth: 16 as const,
+  frameSize: 512 as const,
+} as const;
+
 export interface AudioPacket {
   readonly seq: number;
   readonly capturedAt: number;
   readonly pcmBuffer: ArrayBuffer;
+}
+
+// Session configuration
+export interface SessionConfig {
+  readonly clientId?: string;
+  readonly language?: string;
+  readonly guardrailsEnabled?: boolean;
+  readonly audioSpec?: typeof AUDIO_SPEC;
+}
+
+// Overall system state
+export interface SystemState {
+  readonly sessionId: string;
+  readonly isActive: boolean;
+  readonly currentPhase: PipelineState;
+  readonly transcript?: string;
+  readonly response?: string;
+  readonly error?: string;
 }
 
 // FSM Pipeline Phases - IDLE → LISTENING → VAD_ACTIVE → TRANSCRIBING → REASONING → SPEAKING → IDLE
