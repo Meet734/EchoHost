@@ -1,8 +1,20 @@
 {
-  "dependencies": {
-    "@types/node": "^25.5.2",
-    "onnxruntime-node": "^1.24.3",
-    "ts-node": "^10.9.2",
-    "typescript": "^6.0.2"
+  "name": "echohost",
+  "version": "0.1.0",
+  "private": true,
+  "description": "EchoHost — Autonomous Aviation AI Voice Worker",
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "dev:server": "npm run dev --workspace=server",
+    "dev:client": "npm run dev --workspace=client",
+    "build": "npm run build --workspace=server && npm run build --workspace=client",
+    "typecheck": "npm run typecheck --workspace=server && npm run typecheck --workspace=client"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=9.0.0"
   }
 }

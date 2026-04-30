@@ -3,10 +3,10 @@ import express from 'express';
 import http from 'http';
 import { Server } from 'socket.io';
 import type { ClientToServerEvents, ServerToClientEvents } from '@echohost/shared';
-import { StreamManager, type StreamManagerServices } from './orchestrator/stream-manager.js';
-import { ASRService } from './services/asr-service.js';
-import { ReasoningEngine } from './services/reasoning-engine.js';
-import { TTSService } from './services/tts-service.js';
+import { StreamManager, type StreamManagerServices } from './orchestrator/stream-manager';
+import { ASRService } from './services/asr-service';
+import { ReasoningEngine } from './services/reasoning-engine';
+import { TTSService } from './services/tts-service';
 
 const HOST = process.env.HOST ?? '0.0.0.0';
 const PORT = Number.parseInt(process.env.SOCKET_PORT ?? '3001', 10);

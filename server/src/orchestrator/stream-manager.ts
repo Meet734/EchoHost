@@ -15,12 +15,12 @@ import {
   type ToolCall,
 } from "@echohost/shared";
 
-import { PipelineFSM, FsmError } from "./fsm.js";
-import { AudioRingBuffer } from "./audio-buffer.js";
-import { VADProcessor, DEFAULT_VAD_CONFIG } from "./vad-processor.ts";
-import type { ASRService } from "../services/asr-service.js";
-import type { ReasoningEngine } from "../services/reasoning-engine.js";
-import type { TTSService } from "../services/tts-service.js";
+import { PipelineFSM, FsmError } from "./fsm";
+import { AudioRingBuffer } from "./audio-buffer";
+import { VADProcessor, DEFAULT_VAD_CONFIG } from "./vad-processor";
+import type { ASRService } from "../services/asr-service";
+import type { ReasoningEngine } from "../services/reasoning-engine";
+import type { TTSService } from "../services/tts-service";
 
 export interface StreamManagerServices {
   readonly asr: ASRService;

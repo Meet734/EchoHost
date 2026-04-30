@@ -1,6 +1,9 @@
 import OpenAI from 'openai';
 import { v4 as uuidv4 } from 'uuid';
-import type { AviationTask, AviationTaskParams } from '../../../shared/types';
+// Note: AviationTask and AviationTaskParams are not exported from shared types
+// Using any type for now
+type AviationTask = any;
+type AviationTaskParams = any;
 
 const NIM_BASE_URL    = process.env.NVIDIA_REASONING_ENDPOINT ?? 'https://integrate.api.nvidia.com/v1';
 const NIM_MODEL       = process.env.NVIDIA_REASONING_MODEL ?? 'nvidia/llama-3.1-nemotron-ultra-253b-v1';

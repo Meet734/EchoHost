@@ -2,7 +2,7 @@
 // Real: Flight status (AviationStack), METAR weather (aviationweather.gov)
 // Mock: Baggage, gates, crew, catering (airline-internal systems)
 
-import fetch from "node-fetch";
+import fetch from 'node-fetch';
 import type {
   FlightStatusResponse,
   BaggageTrackingResponse,

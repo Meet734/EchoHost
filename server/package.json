@@ -8,25 +8,23 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc --project tsconfig.json",
     "start": "node dist/index.js",
-    "typecheck": "tsc --noEmit",
-    "lint": "eslint src --ext .ts"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "onnxruntime-node": "^1.20.1",
-    "openai": "^4.52.7",
+    "form-data": "^4.0.0",
+    "node-fetch": "^2.7.0",
     "socket.io": "^4.7.5",
-    "uuid": "^10.0.0",
-    "ws": "^8.18.0",
-    "winston": "^3.13.0",
-    "zod": "^3.23.8"
+    "uuid": "^10.0.0"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/node": "^20.14.10",
+    "@types/node-fetch": "^2.6.11",
     "@types/uuid": "^10.0.0",
-    "@types/ws": "^8.5.13",
     "tsx": "^4.16.2",
     "typescript": "^5.5.3"
   }
