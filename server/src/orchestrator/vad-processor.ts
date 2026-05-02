@@ -7,12 +7,11 @@ import type { VADConfig, VADResult } from "@echohost/shared";
 export const VAD_FRAME_SIZE = 512 as const;
 export const VAD_SAMPLE_RATE = 16_000 as const;
 
-// Default config tuned for noisy airport environments
 export const DEFAULT_VAD_CONFIG: VADConfig = {
-  threshold: 0.5,
-  windowSize: 8,
+  threshold: 0.4,
+  windowSize: 6,
   minSpeechFrames: 3,
-  silencePaddingFrames: 10,
+  silencePaddingFrames: 15,
 };
 
 type VADEvents = {
@@ -91,9 +90,7 @@ export class VADProcessor extends EventEmitter<VADEvents> {
       this._consecutiveSpeechFrames++;
       this._consecutiveSilenceFrames = 0;
 
-      if (this._isSpeechActive) {
-        this._speechBuffer.push(new Int16Array(frame));
-      }
+      this._speechBuffer.push(new Int16Array(frame));
 
       if (
         !this._isSpeechActive &&
@@ -101,8 +98,9 @@ export class VADProcessor extends EventEmitter<VADEvents> {
       ) {
         this._isSpeechActive = true;
         this._speechStartTimestamp = timestamp;
-        this._speechBuffer = [];
+        // this._speechBuffer = [];
         this.emit("speech:start", timestamp);
+        console.log(`[VAD] speech:start at ${timestamp} (consecutiveSpeechFrames=${this._consecutiveSpeechFrames}, prob=${smoothedProbability.toFixed(3)})`);
       }
     } else {
       this._consecutiveSilenceFrames++;
@@ -114,7 +112,10 @@ export class VADProcessor extends EventEmitter<VADEvents> {
         if (
           this._consecutiveSilenceFrames >= this._config.silencePaddingFrames
         ) {
+          console.log(`[VAD] consecutiveSilenceFrames ${this._consecutiveSilenceFrames} >= ${this._config.silencePaddingFrames}; ending speech`);
           this._endSpeech();
+        } else if (this._consecutiveSilenceFrames % 5 === 0) {
+          console.log(`[VAD] silence frames=${this._consecutiveSilenceFrames}/${this._config.silencePaddingFrames}`);
         }
       }
     }
@@ -129,6 +130,7 @@ export class VADProcessor extends EventEmitter<VADEvents> {
     this._consecutiveSilenceFrames = 0;
     this._speechBuffer = [];
 
+    console.log(`[VAD] _endSpeech() called. Emitting speech:end (samples=${fullAudio.length}, startTs=${startTimestamp})`);
     this.emit("speech:end", fullAudio, startTimestamp);
   }
 
@@ -141,7 +143,8 @@ export class VADProcessor extends EventEmitter<VADEvents> {
       sumSquares += sample * sample;
     }
     const rms = Math.sqrt(sumSquares / frame.length);
-    return Math.min(1.0, rms / 3000);
+    // Divisor tuned for speech detection: 1500 provides good balance
+    return Math.min(1.0, rms / 1500);
   }
 
   private _updateWindow(probability: number): number {

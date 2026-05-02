@@ -36,9 +36,10 @@ export class ASRService {
 
   async transcribe(
     pcm: Int16Array,
-    _sessionId: string,
+    sessionId: string,
     onPartial: PartialTranscriptCallback,
   ): Promise<string> {
+    console.log(`[ASR] Starting transcription for session ${sessionId}, audio length: ${pcm.length} samples`);
     const wavBuffer = this._encodePcmToWav(pcm);
     const form = new FormData();
     form.append('audio', wavBuffer, {
@@ -51,6 +52,7 @@ export class ASRService {
 
     let response;
     try {
+      console.log(`[ASR] Sending transcription request to ${this._config.baseUrl}/audio/transcriptions`);
       response = await fetch(`${this._config.baseUrl}/audio/transcriptions`, {
         method: 'POST',
         headers: {
@@ -60,18 +62,24 @@ export class ASRService {
         body: form as any,
         signal: controller.signal as any,
       });
+    } catch (err) {
+      console.error(`[ASR] Request failed:`, err);
+      throw err;
     } finally {
       clearTimeout(timeout);
     }
 
     if (!response.ok) {
       const body = await response.text().catch(() => '<unreadable>');
-      throw new Error(`ASR request failed: ${response.status} ${response.statusText} — ${body}`);
+      const errorMsg = `ASR request failed: ${response.status} ${response.statusText} — ${body}`;
+      console.error(`[ASR] ${errorMsg}`);
+      throw new Error(errorMsg);
     }
 
     const data = (await response.json()) as { text?: string };
     const transcript = data.text?.trim() ?? '';
 
+    console.log(`[ASR] Transcription complete: "${transcript.substring(0, 100)}${transcript.length > 100 ? '...' : ''}'`);
     this._simulatePartials(transcript, onPartial);
     return transcript;
   }

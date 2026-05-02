@@ -53,6 +53,7 @@ async function bootstrap(): Promise<void> {
     activeManagers.add(manager);
 
     socket.on('session:start', (data: { clientVersion: string }) => {
+      console.log(`[INFO] session:start received from ${socket.id}, clientVersion=${data.clientVersion}`);
       manager.start(data.clientVersion);
     });
 

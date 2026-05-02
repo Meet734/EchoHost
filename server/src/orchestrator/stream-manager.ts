@@ -164,6 +164,7 @@ export class StreamManager {
     this._vad.on("speech:start", (timestamp) => {
       if (this._isDisposed) return;
       this._metrics.vadDetectedAt = timestamp;
+      console.log(`[StreamManager][${this.sessionId}] Speech detected at ${timestamp}`);
       if (this._fsm.is(PipelineState.SPEAKING)) {
         this.handleInterrupt();
       }
@@ -171,8 +172,15 @@ export class StreamManager {
     });
 
     this._vad.on("speech:end", (audioBuffer, startTimestamp) => {
-      if (this._isDisposed) return;
-      if (!this._fsm.is(PipelineState.VAD_ACTIVE)) return;
+      if (this._isDisposed) {
+        console.log(`[StreamManager][${this.sessionId}] speech:end fired but session disposed, ignoring`);
+        return;
+      }
+      if (!this._fsm.is(PipelineState.VAD_ACTIVE)) {
+        console.log(`[StreamManager][${this.sessionId}] speech:end fired but FSM not in VAD_ACTIVE (current: ${this._fsm.state}), ignoring`);
+        return;
+      }
+      console.log(`[StreamManager][${this.sessionId}] speech:end fired, audio buffer: ${audioBuffer.length} samples`);
       this._metrics.speechEndTime = Date.now();
       this._runPipeline(audioBuffer, startTimestamp).catch((err) => {
         this._handlePipelineError(err);
@@ -191,6 +199,8 @@ export class StreamManager {
     this._currentTranscript = "";
     this._currentResponse = "";
 
+    console.log(`[StreamManager][${this.sessionId}] Pipeline started for turn #${this._turnNumber}, audio buffer length: ${audioBuffer.length} samples`);
+
     // Phase: TRANSCRIBING
     this._fsm.transition(PipelineState.TRANSCRIBING);
     this._metrics.asrStartTime = Date.now();
@@ -204,7 +214,16 @@ export class StreamManager {
 
     this._metrics.asrEndTime = Date.now();
     this._currentTranscript = transcript;
+    console.log(`[StreamManager][${this.sessionId}] ASR complete: "${transcript.substring(0, 100)}${transcript.length > 100 ? '...' : ''}"`);
     this._socket.emit("asr:final", { text: transcript, sessionId: this.sessionId });
+
+    // Skip reasoning if transcript is empty
+    if (!transcript.trim()) {
+      console.log(`[StreamManager][${this.sessionId}] Empty transcript, skipping reasoning and TTS`);
+      this._fsm.transition(PipelineState.IDLE);
+      this._fsm.transition(PipelineState.LISTENING);
+      return;
+    }
 
     // Phase: REASONING
     this._fsm.transition(PipelineState.REASONING);
@@ -287,6 +306,7 @@ export class StreamManager {
       err instanceof Error ? err.message : "Unknown pipeline error";
 
     console.error(`[StreamManager][${this.sessionId}] Pipeline error:`, err);
+    console.error(`[StreamManager][${this.sessionId}] Error code: ${code}, message: ${message}`);
 
     this._fsm.forceError();
     this._emitError(code, message);
