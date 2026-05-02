@@ -1,0 +1,69 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ErrorCode = exports.AviationIntent = exports.VALID_TRANSITIONS = exports.PipelineState = exports.AUDIO_SPEC = exports.AUDIO_HEADER_BYTES = exports.PROTOCOL_VERSION = void 0;
+exports.PROTOCOL_VERSION = "1.0.0";
+// Binary wire format: [seq: Uint32 (4 bytes)] [capturedAt: Float64 (8 bytes)] [pcm: Int16[] (N bytes)]
+exports.AUDIO_HEADER_BYTES = 12;
+// Audio specification (16 kHz mono PCM)
+exports.AUDIO_SPEC = {
+    sampleRate: 16_000,
+    channels: 1,
+    bitDepth: 16,
+    frameSize: 512,
+};
+// FSM Pipeline Phases - IDLE → LISTENING → VAD_ACTIVE → TRANSCRIBING → REASONING → SPEAKING → IDLE
+exports.PipelineState = {
+    IDLE: "IDLE",
+    LISTENING: "LISTENING",
+    VAD_ACTIVE: "VAD_ACTIVE",
+    TRANSCRIBING: "TRANSCRIBING",
+    REASONING: "REASONING",
+    SPEAKING: "SPEAKING",
+    ERROR: "ERROR",
+};
+// Valid state transitions
+exports.VALID_TRANSITIONS = {
+    IDLE: [exports.PipelineState.LISTENING],
+    LISTENING: [exports.PipelineState.VAD_ACTIVE, exports.PipelineState.IDLE],
+    VAD_ACTIVE: [exports.PipelineState.TRANSCRIBING, exports.PipelineState.LISTENING],
+    TRANSCRIBING: [exports.PipelineState.REASONING, exports.PipelineState.ERROR],
+    REASONING: [exports.PipelineState.SPEAKING, exports.PipelineState.ERROR],
+    SPEAKING: [exports.PipelineState.IDLE],
+    ERROR: [],
+};
+// Aviation Intents
+exports.AviationIntent = {
+    CHECK_GATE: "CHECK_GATE",
+    TRACK_BAGGAGE: "TRACK_BAGGAGE",
+    CHECK_FLIGHT_STATUS: "CHECK_FLIGHT_STATUS",
+    GET_WEATHER_BRIEFING: "GET_WEATHER_BRIEFING",
+    CHECK_CONNECTION_TIME: "CHECK_CONNECTION_TIME",
+    CHECK_LOUNGE_LOCATION: "CHECK_LOUNGE_LOCATION",
+    REQUEST_MEAL_PREFERENCE: "REQUEST_MEAL_PREFERENCE",
+    CHECK_UPGRADE_AVAILABILITY: "CHECK_UPGRADE_AVAILABILITY",
+    REPORT_LOST_ITEM: "REPORT_LOST_ITEM",
+    GET_WIFI_ACCESS: "GET_WIFI_ACCESS",
+    CHECK_LOAD_FACTOR: "CHECK_LOAD_FACTOR",
+    CHECK_CREW_STATUS: "CHECK_CREW_STATUS",
+    LOG_MAINTENANCE: "LOG_MAINTENANCE",
+    CHECK_BAGGAGE_LOAD: "CHECK_BAGGAGE_LOAD",
+    CHECK_FUELING: "CHECK_FUELING",
+    CHECK_CATERING: "CHECK_CATERING",
+    GET_STAND_ALLOCATION: "GET_STAND_ALLOCATION",
+    REPORT_SECURITY_ALERT: "REPORT_SECURITY_ALERT",
+    UNKNOWN: "UNKNOWN",
+};
+// Error Codes
+exports.ErrorCode = {
+    INVALID_STATE_TRANSITION: "INVALID_STATE_TRANSITION",
+    AUDIO_BUFFER_OVERFLOW: "AUDIO_BUFFER_OVERFLOW",
+    ASR_CONNECTION_FAILED: "ASR_CONNECTION_FAILED",
+    LLM_RATE_LIMITED: "LLM_RATE_LIMITED",
+    LLM_INVALID_RESPONSE: "LLM_INVALID_RESPONSE",
+    TOOL_EXECUTION_FAILED: "TOOL_EXECUTION_FAILED",
+    TTS_CONNECTION_FAILED: "TTS_CONNECTION_FAILED",
+    SESSION_TIMEOUT: "SESSION_TIMEOUT",
+    PROTOCOL_VERSION_MISMATCH: "PROTOCOL_VERSION_MISMATCH",
+    GOVERNANCE_VIOLATION: "GOVERNANCE_VIOLATION",
+};
+//# sourceMappingURL=index.js.map

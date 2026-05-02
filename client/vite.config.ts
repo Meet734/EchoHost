@@ -8,6 +8,7 @@ export default defineConfig({
     alias: {
       '@echohost/shared': path.resolve(__dirname, '../shared/types/index.ts'),
     },
+    extensions: ['.mts', '.ts', '.mtsx', '.tsx', '.mjs', '.js', '.mjs', '.cjs', '.json'],
   },
   server: {
     port: 5173,

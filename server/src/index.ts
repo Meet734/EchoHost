@@ -56,7 +56,7 @@ async function bootstrap(): Promise<void> {
       manager.start(data.clientVersion);
     });
 
-    socket.on('audio:chunk', (packet: ArrayBuffer) => {
+    socket.on('audio:chunk', (packet: ArrayBuffer | Uint8Array) => {
       manager.handleAudioChunk(packet);
     });
 

@@ -5,10 +5,9 @@
     "moduleResolution": "node",
     "lib": ["ES2022"],
     "outDir": "./dist",
-    "rootDir": "./src",
-    "baseUrl": ".",
+    "baseUrl": "..",
     "paths": {
-      "@echohost/shared": ["../shared/types/index.ts"]
+      "@echohost/shared": ["./shared/types/index.ts"]
     },
     "strict": true,
     "esModuleInterop": true,
@@ -21,6 +20,6 @@
     "noImplicitReturns": true,
     "allowJs": false
   },
-  "include": ["src/**/*", "../shared/types/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "src/services/reasoningService.ts"]
 }

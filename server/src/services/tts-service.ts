@@ -70,7 +70,8 @@ export class TTSService {
 
       await new Promise<void>((resolve, reject) => {
         const onAbort = (): void => {
-          (body as NodeJS.ReadableStream).destroy?.();
+          const stream = body as any;
+          stream.destroy?.();
           resolve();
         };
         controller.signal.addEventListener('abort', onAbort, { once: true });

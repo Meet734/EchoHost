@@ -96,16 +96,21 @@ export class StreamManager {
   }
 
   // Decode wire format: [seq: Uint32][capturedAt: Float64][pcm: Int16[]]
-  handleAudioChunk(packet: ArrayBuffer): void {
+  handleAudioChunk(packet: ArrayBuffer | Uint8Array): void {
     if (this._isDisposed) return;
     if (!this._fsm.is(PipelineState.LISTENING)) return;
 
-    if (packet.byteLength <= AUDIO_HEADER_BYTES) return;
+    const buffer =
+      packet instanceof ArrayBuffer
+        ? packet
+        : packet.buffer.slice(packet.byteOffset, packet.byteOffset + packet.byteLength);
 
-    const view = new DataView(packet);
+    if (buffer.byteLength <= AUDIO_HEADER_BYTES) return;
+
+    const view = new DataView(buffer);
     const capturedAt = view.getFloat64(4, true);
-    const pcmBytes = packet.byteLength - AUDIO_HEADER_BYTES;
-    const pcm = new Int16Array(packet, AUDIO_HEADER_BYTES, pcmBytes / 2);
+    const pcmBytes = buffer.byteLength - AUDIO_HEADER_BYTES;
+    const pcm = new Int16Array(buffer, AUDIO_HEADER_BYTES, pcmBytes / 2);
 
     this._ringBuffer.write(pcm);
     this._vad.processChunk(pcm, capturedAt);
@@ -130,6 +135,8 @@ export class StreamManager {
       this._services.tts.abort(this.sessionId);
     }
 
+    // Remove all VAD listeners before flushing to prevent events from being processed
+    this._vad.removeAllListeners();
     this._vad.flush();
     this._ringBuffer.reset();
 
@@ -147,6 +154,7 @@ export class StreamManager {
 
   private _wireUpVAD(): void {
     this._vad.on("probability", (result) => {
+      if (this._isDisposed) return;
       this._socket.emit("vad:probability", {
         probability: result.probability,
         isSpeech: result.isSpeech,
@@ -154,6 +162,7 @@ export class StreamManager {
     });
 
     this._vad.on("speech:start", (timestamp) => {
+      if (this._isDisposed) return;
       this._metrics.vadDetectedAt = timestamp;
       if (this._fsm.is(PipelineState.SPEAKING)) {
         this.handleInterrupt();
@@ -162,6 +171,7 @@ export class StreamManager {
     });
 
     this._vad.on("speech:end", (audioBuffer, startTimestamp) => {
+      if (this._isDisposed) return;
       if (!this._fsm.is(PipelineState.VAD_ACTIVE)) return;
       this._metrics.speechEndTime = Date.now();
       this._runPipeline(audioBuffer, startTimestamp).catch((err) => {
