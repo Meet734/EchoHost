@@ -1,5 +1,5 @@
-// Text-to-speech via NVIDIA Riva TTS (NIM endpoint)
-// Streams audio chunks to client, supports barge-in abort
+// Text-to-speech via Groq Orpheus TTS (canopylabs/orpheus-v1-english)
+// Groq uses the identical OpenAI-compatible /audio/speech format.
 
 import fetch from 'node-fetch';
 
@@ -12,10 +12,10 @@ export interface TTSServiceConfig {
 }
 
 export const DEFAULT_TTS_CONFIG: TTSServiceConfig = {
-  apiKey: process.env['NVIDIA_API_KEY'] ?? '',
-  baseUrl: process.env['NVIDIA_TTS_BASE_URL'] ?? 'https://integrate.api.nvidia.com/v1',
-  voice: process.env['NVIDIA_TTS_VOICE'] ?? 'English-US.Female-1',
-  sampleRateHz: 22_050,
+  apiKey: process.env['GROQ_API_KEY'] ?? process.env['NVIDIA_API_KEY'] ?? '',
+  baseUrl: process.env['TTS_BASE_URL'] ?? 'https://api.groq.com/openai/v1',
+  voice: process.env['TTS_VOICE'] ?? 'Aaliyah',
+  sampleRateHz: 24_000,
   timeoutMs: 20_000,
 };
 
@@ -48,11 +48,10 @@ export class TTSService {
           Authorization: `Bearer ${this._config.apiKey}`,
         },
         body: JSON.stringify({
-          model: 'nvidia/fastpitch-hifigan-tts',
+          model: process.env['TTS_MODEL'] ?? 'playai-tts',
           input: text,
           voice: this._config.voice,
           response_format: 'wav',
-          sample_rate: this._config.sampleRateHz,
         }),
         signal: controller.signal as any,
       });

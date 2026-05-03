@@ -98,7 +98,7 @@ export class StreamManager {
   // Decode wire format: [seq: Uint32][capturedAt: Float64][pcm: Int16[]]
   handleAudioChunk(packet: ArrayBuffer | Uint8Array): void {
     if (this._isDisposed) return;
-    if (!this._fsm.is(PipelineState.LISTENING)) return;
+    if (!this._fsm.is(PipelineState.LISTENING) && !this._fsm.is(PipelineState.VAD_ACTIVE)) return;
 
     const buffer =
       packet instanceof ArrayBuffer

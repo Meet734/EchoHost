@@ -1,5 +1,5 @@
-// Speech-to-text via NVIDIA NIM (Parakeet-TDT-1.1B)
-// Encodes PCM to WAV in-process and streams word-by-word partials
+// Speech-to-text via Groq Whisper API (openai/whisper-large-v3)
+// Groq uses the identical OpenAI-compatible /audio/transcriptions REST format.
 
 import FormData from 'form-data';
 import fetch from 'node-fetch';
@@ -13,11 +13,11 @@ export interface ASRServiceConfig {
 }
 
 export const DEFAULT_ASR_CONFIG: ASRServiceConfig = {
-  apiKey: process.env['NVIDIA_API_KEY'] ?? '',
-  baseUrl: process.env['NVIDIA_ASR_BASE_URL'] ?? 'https://integrate.api.nvidia.com/v1',
-  model: process.env['NVIDIA_ASR_MODEL'] ?? 'nvidia/parakeet-tdt-1.1b',
-  language: 'en-US',
-  timeoutMs: 10_000,
+  apiKey: process.env['GROQ_API_KEY'] ?? process.env['NVIDIA_API_KEY'] ?? '',
+  baseUrl: process.env['ASR_BASE_URL'] ?? 'https://api.groq.com/openai/v1',
+  model: process.env['ASR_MODEL'] ?? 'whisper-large-v3',
+  language: 'en',
+  timeoutMs: 30_000,
 };
 
 const WAV_SAMPLE_RATE = 16_000;
@@ -42,17 +42,21 @@ export class ASRService {
     console.log(`[ASR] Starting transcription for session ${sessionId}, audio length: ${pcm.length} samples`);
     const wavBuffer = this._encodePcmToWav(pcm);
     const form = new FormData();
-    form.append('audio', wavBuffer, {
+    
+    form.append('file', wavBuffer, {
       filename: 'audio.wav',
       contentType: 'audio/wav',
     });
+
+    form.append('model', this._config.model);
+    form.append('language', this._config.language);
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this._config.timeoutMs);
 
     let response;
     try {
-      console.log(`[ASR] Sending transcription request to ${this._config.baseUrl}/audio/transcriptions`);
+      console.log(`[ASR] Sending transcription request to ${this._config.baseUrl}/audio/transcriptions (model=${this._config.model})`);
       response = await fetch(`${this._config.baseUrl}/audio/transcriptions`, {
         method: 'POST',
         headers: {
